@@ -1,70 +1,103 @@
 #!/bin/sh
 
-# Settings
-username="user"
-password="password"
-# server needs to be the server name and context of Jira install, ex: https://jira/jira
-server="https://jira/jira"
-
-# background - [true|false] Set to true for background index or false to preform an instance locking reindex
+########################################## Settings ##########################################
+# username - Admin user on the Jira Server
+username="jason.hensler"
+# password - Password for user, can be left as '' and passed in at run time by call script with password argument ex: ./reindex.sh <password>
+password=""
+# server needs to be the server name and context of Jira install, ex: http(s)://<jira_dns>:<port>/<jira_context>
+server="https://confjira01aq:8080/jira"
+# background - [true|false] Set to true for background index or false to preform an instance locking re-index
 background=true
-
 # monitor - [true|false] Set to true for the script to monitor the re-index. This will cause the script to check status until it reaches 100%
 monitor=true
-
 # Debug - [true|false] Set to true to print the output of the curl request
-debug=0
+debug=false
+# print_date - [true|false] Set to 1 to print the date on each output line.
+print_date=true
+# date_format - Standard date command format to be displayed if print_date=true
+date_format="+%Y-%m-%d_%T"
+# cookie_dir - Directory to store the .cookies.txt (cookie jar) for curl.
+cookie_dir=$HOME
 
-#### Main
+#################################################################################################
 
-#Version check. For possible future use otherwise, only informational.
-output=$(curl -D- -s -S -k -u $username:$password -X GET -H "Content-Type: application/json" "${server}/rest/api/2/serverInfo")
-if [[ $debug == 1 ]]; then
-        echo ------------------- Http raw response ---------------------------
-        echo $output
-        echo ------------------- ---------------------------
+########################################### Functions ###########################################
+#pdate - Function will print date string before echo statements in format $date_format if print_date is enabled.
+pdate() {
+        if [[ "$print_date" == "true" ]]; then
+                echo -n "$(date $date_format) - "
+        fi
+}
+
+# url_call() - Function calls the url via curl. Checks that curl did not return an error and that login was successful. Set the output
+callUrl() {
+        #
+        output=`curl -D- -s -S -k  --cookie $cookie_dir/.cookies.txt --cookie-jar $cookie_dir/.cookies.txt -u $username:$password -X $1 -H "X-Atlassian-Token: no-check" -H "Content-Type: application/json" "$2"`
+        if [[ $? == 0 ]]; then
+                login=`echo $output | grep -c "X-Seraph-LoginReason: OK"`
+                if [[ $login != 1 ]]; then
+                        echo "$(pdate)Error: login unsuccessful!"
+                        return 1
+                fi
+                ret=0
+        else
+                echo "$(pdate)Curl command return an error!"
+                ret=1
+        fi
+        if [[ "$debug" == "true" ]]; then
+                echo "$(pdate)------------------- Http raw response ---------------------------"
+                echo "$(pdate)$output"
+                echo "$(pdate)------------------- ---------------------------"
+
+        fi
+        return $ret
+}
+
+#################################################################################################
+
+############################################# Main ##############################################
+#verify password is set or passed at runtime.
+if [[ -z "$1" && -z $password ]]; then
+        echo "$(pdate) Must set \$password or pass to script at runtime!"
+        exit 2
 fi
+if [[ ! -z "$1" ]]; then
+        password=$1
+fi
+#Version check, Used to decided which url to use during status checking. Useful for future updates as well.
+callUrl "GET" "${server}/rest/api/2/serverInfo"
 if [[ $? != 0 ]]; then
-        echo "Version Check FAILED!"
-        echo "Curl Failed with exit code $?: $!"
-        echo ------------------- Http raw response ---------------------------
-        echo $output
-        echo ------------------- ---------------------------
+        echo "$(pdate)Version Check FAILED!"
+        echo $(pdate)------------------- Http raw response ---------------------------
+        echo $(pdate)$output
+        echo $(pdate)------------------- ---------------------------
         exit 1
 else
         #Get the "VersionNumbers" json response and phrase to an array
         version=$(echo $output | sed -e 's/[{}]/''/g' | awk -v RS=',"' -F: '/^versionNumber/ {print $2}' | tr -d '[]')
         version=(${version//,/ })
-        echo "$(date +%Y-%m-%d_%T) - Jira Version Detected: ${version[0]}.${version[1]}.${version[2]}."
+        echo "$(pdate) Jira Version Detected: ${version[0]}.${version[1]}.${version[2]}."
 fi
 
-#Call reindex
+#Call re-index
 if [[ "$background" == "true" ]]; then
-                echo -n "$(date +%Y-%m-%d_%T) - Starting Background re-index...."
-        output=$(curl -D- -s -S -k -u $username:$password -X POST -H "Content-Type: application/json" "${server}/rest/api/2/reindex")
+                echo "$(pdate) Starting Background re-index...."
+        callUrl "POST" "${server}/rest/api/2/reindex"
 else
-                echo -n "$(date +%Y-%m-%d_%T) - Starting Background re-index...."
-        output=$(curl -D- -s -S -k -u $username:$password -X POST -H "Content-Type: application/json" "${server}/rest/api/2/reindex?type=FOREGROUND")
+                echo "$(pdate) Starting Foreground re-index...."
+        callUrl "POST" "${server}/rest/api/2/reindex?type=FOREGROUND"
 fi
 
 if [[ $? != 0 ]]; then
-        echo "\t FAILED!"
-        echo "Curl Failed with exit code $?: $!"
-        echo ------------------- Http raw response ---------------------------
-        echo $output
-        echo ------------------- ---------------------------
+        echo "$(pdate) re-index FAILED!"
+        echo "$(pdate)------------------- Http raw response ---------------------------"
+        echo "$(pdate)$output"
+        echo "$(pdate)------------------- ---------------------------"
         exit 1
-else
-                echo -e "\t OKAY."
 fi
 
-if [[ $debug == 1 ]]; then
-        echo ------------------- Http raw response ---------------------------
-        echo $output
-        echo ------------------- ---------------------------
-fi
-
-#Check version to see if we should use progressUrl or the reindex url, this changed in 6.4.x
+#Check version to see if we should use progressUrl or the re-index url, this changed in 6.4.x
 if [[ ${version[0]} -ge 6 && ${version[1]} -ge 4 ]]; then
         progress_url=$(echo $output | grep -Po '"progressUrl":.*?[^\\],')
         progress_url=$(echo $progress_url | cut -d ":" -f 2 | tr -d '",')
@@ -73,29 +106,35 @@ if [[ ${version[0]} -ge 6 && ${version[1]} -ge 4 ]]; then
 else
         progress_url="/rest/api/2/reindex"
 fi
-echo ProgressURL: $progress_url
+
 progress=0
 until [[ "$progress" == "100" || "$monitor" != "true" ]]
 do
         sleep 5
-        output=$(curl -s -S -k -u $username:$password -X GET -H "Content-Type: application/json" "${server}${progress_url}")
-        if [[ $debug == 1 ]]; then
-                echo ------------------- Http raw response ---------------------------
-                echo $output
-                echo ------------------- ---------------------------
+        callUrl "GET" "${server}${progress_url}"
+        if [[ $? != 0 ]];then
+                echo "$(pdate) Error retrieving progress!"
+                echo "$(pdate)------------------- Http raw response ---------------------------"
+                echo "$(pdate)$output"
+                echo "$(pdate)------------------- ---------------------------"
+                exit 1
         fi
+
+        #Parse response for the currentProgress json object, hopefully this will be more change tolerant
         progress=$(echo $output | grep -Po '"currentProgress":.*?[^\\],' | cut -d ":" -f 2 | tr -d ,)
-        status=$(echo $output | grep -Po '"success":.*?[^\\][,|}]' | cut -d ":" -f 2 | tr -d ,})
+        sucess=$(echo $output | grep -Po '"success":.*?[^\\][,|}]' | cut -d ":" -f 2 | tr -d ,})
         if [ "$oldprog" != "$progress" ]; then
-                echo "$(date +%Y-%m-%d_%T) - Index is at ${progress}%, success: $status"
+                echo "$(pdate) Re-Indexing is at ${progress}%"
         fi
         oldprog=$progress
 done
 
-echo -n "$(date +%Y-%m-%d_%T) - Re-indexing is completed "
-if [[ "$status" == "true" ]]; then
+echo -n "$(pdate) Re-indexing is completed "
+if [[ "$sucess" == "true" ]]; then
         echo "successfully."
 else
         echo " with errors."
         exit 1
 fi
+#cleanup curl cookie store after running.
+rm $cookie_dir/.cookies.txt
