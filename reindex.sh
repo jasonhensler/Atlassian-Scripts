@@ -1,6 +1,5 @@
 #!/bin/bash
-# This script requires bash, on some systems like Ubuntu, /bin/sh redirects to a different shell
-# such as dash, which will not properly run this script in it's current iteration.
+
 ########################################## Settings ##########################################
 # username - Admin user on the Jira Server
 username="jason.hensler"
