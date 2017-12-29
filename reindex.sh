@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/bin/bash
 
 ########################################## Settings ##########################################
 # username - Admin user on the Jira Server
